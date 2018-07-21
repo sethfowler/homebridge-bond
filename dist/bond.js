@@ -26,40 +26,66 @@ class Bond {
                     propertyId: obj.device_property_command_id
                 });
             }
-            devices.push({
+            const device = {
                 id: objs[0].id,
                 type: objs[0].device_type,
                 room: objs[0].location_type,
                 propertyId: objs[0].device_property_id,
                 commands: commands,
                 bondId: this.id,
-            });
+            };
+            if (device.type == "Fan") {
+                const fan = device;
+                fan.speed = 0;
+                fan.direction = 0;
+                fan.lightState = 0;
+            }
+            devices.push(device);
         }
         this.devices = devices;
     }
     powerOffCommand(device) {
-        return device.commands
-            .filter(command => {
-            return command.name == "Power Toggle";
-        })[0];
+        return this.speedCommand(device, 0);
     }
     powerOnCommand(device) {
-        return this.sortedSpeedCommands(device)[0];
+        return this.speedCommand(device, 1);
+    }
+    speedCommand(device, speed) {
+        return this.stateCommand(device, speed, device.lightState);
+    }
+    lightOffCommand(device) {
+        return this.stateCommand(device, device.speed, 0);
+    }
+    lightOnCommand(device) {
+        return this.stateCommand(device, device.speed, 1);
+    }
+    stateCommand(device, speed, lightState) {
+        if (speed < 0) {
+            speed = 0;
+        }
+        if (speed == 0) {
+            if (lightState) {
+                return this.commandForName(device, "Light Toggle"); // No fan, light on.
+            }
+            else {
+                return this.commandForName(device, "Power Toggle"); // No fan, no light.
+            }
+        }
+        // Speeds 1-3 have the light on; speeds 4-6 are the same speeds, but with
+        // the light off.
+        if (speed > 3) {
+            speed = 3;
+        }
+        if (!lightState) {
+            speed += 3;
+        }
+        return this.commandForName(device, "Speed " + speed);
     }
     commandForName(device, name) {
         return (device.commands
             .filter(command => {
             return command.name == name;
         }) || [null])[0];
-    }
-    sortedSpeedCommands(device) {
-        return device.commands
-            .filter(command => {
-            return command.name.startsWith("Speed ");
-        })
-            .sort((a, b) => {
-            return parseInt(a.name.replace(/[^\d.]/g, '')) > parseInt(b.name.replace(/[^\d.]/g, '')) ? 1 : -1;
-        });
     }
     sendCommand(session, command, device) {
         this.sequence++;

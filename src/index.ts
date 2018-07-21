@@ -15,6 +15,7 @@ class BondPlatform {
   private accessories: any[] = [];
   private session: Session;
   private bonds: Bond[];
+  private lastRequest: Promise<void> = Promise.resolve();
 
   constructor(private log: (string) => void, config: {}, private api: any) {
     let email = config['email'];
@@ -71,7 +72,7 @@ class BondPlatform {
     accessory
       .addService(Service.Fan, device.room + " " + device.type);
     accessory
-      .addService(Service.Switch, "Reverse " + device.room + " " + device.type);
+        .addService(Service.Lightbulb, device.room + " " + device.type + " Light");
     this.setupObservers(accessory);
 
     accessory
@@ -116,76 +117,137 @@ class BondPlatform {
     let device: Device = accessory.context.device;
     let bond = this.bondForIdentifier(device.bondId);
     if (device.type == "Fan" && accessory.getService(Service.Fan)) {
-      let fan = <Fan>device;
-      accessory.getService(Service.Switch)
-        .getCharacteristic(Characteristic.On)
-        .on('set', function(value, callback) {
-          let command = bond.commandForName(fan, "Reverse");
-
-          bond.sendCommand(that.session, command, fan)
-            .then(() => {
+      let fan = device as Fan;
+      accessory.getService(Service.Lightbulb)
+          .getCharacteristic(Characteristic.On)
+          .on('set', function (value, callback) {
+            // XXX: Having problems with this being delivered in a
+            // different order than requests are sent when setting scenes.
+            // Probably need our own internal request queue or
+            // something...
+            let command = value ? bond.lightOnCommand(fan) : bond.lightOffCommand(fan);
+            fan.lightState = value ? 1 : 0;
+            that.log('HAP: set light to ' + value + '. fan.lightState: ' + fan.lightState + '. sending: ' + (command ? command.name : '?'));
+            that.lastRequest = that.lastRequest.then(() => {
+              return bond.sendCommand(that.session, command, fan);
+            }).then(() => {
+              that.log('BOND: done setting light to ' + value);
               callback();
-            })
-            .catch(error => {
+            }).catch(error => {
+              that.log('BOND: error setting light to ' + value);
               that.log(error);
               callback();
             });
-        })
-        .on('get', function(callback) {
-          callback(null, false);
-        });
+          })
+          .on('get', function (callback) {
+            that.log(`HAP: get light state: ${fan.lightState}`);
+            callback(null, fan.lightState > 0);
+          });
       accessory.getService(Service.Fan)
-        .getCharacteristic(Characteristic.On)
-        .on('set', function(value, callback) {
+          .getCharacteristic(Characteristic.RotationDirection)
+          .on('set', function (value, callback) {
+            // XXX: Is this a third dimension? Do we need versions for
+            // light on and off, and for different fan speeds?
+            // XXX: Just tested and yes, we do need, I guess, versions for
+            // all light states and speeds!!
+            // XXX: Disabled for now until this is fixed, since HomeKit
+            // sends all possible messages including this one when setting
+            // a scene.
+            if (true) {
+              that.log('HAP: set direction to ' + value + '. fan.direction: ' + fan.direction + '. sending no command (direction is disabled)');
+              callback();
+              return;
+            }
+            let commandName = value ? "Reverse" : "Random";
+            let command = bond.commandForName(fan, commandName);
+            fan.direction = value ? 1 : 0;
+            that.log('HAP: set direction to ' + value + '. fan.direction: ' + fan.direction + '. sending: ' + (command ? command.name : '?'));
+            that.lastRequest = that.lastRequest.then(() => {
+              return bond.sendCommand(that.session, command, fan);
+            }).then(() => {
+              that.log('BOND: done setting direction to ' + value);
+              callback();
+            }).catch(error => {
+              that.log('BOND: error setting direction to ' + value);
+              that.log(error);
+              callback();
+            });
+          })
+          .on('get', function (callback) {
+            that.log(`HAP: get direction: ${fan.direction}`);
+            callback(null, fan.direction > 0);
+          });
+      accessory.getService(Service.Fan)
+          .getCharacteristic(Characteristic.On)
+          .on('set', function (value, callback) {
+          let desiredSpeed = value ? 1 : 0;
+          if (fan.speed !== undefined && (desiredSpeed == fan.speed || (desiredSpeed > 0 && fan.speed > 0))) {
+            that.log('HAP: set fan on to ' + value + '. fan.speed is already: ' + fan.speed + '. sending no command');
+            callback();
+            return;
+          }
           let command = value ? bond.powerOnCommand(fan) : bond.powerOffCommand(fan);
-
-          bond.sendCommand(that.session, command, fan)
-            .then(() => {
-              callback();
-            })
-            .catch(error => {
-              that.log(error);
-              callback();
-            });
-        })
-        .on('get', function(callback) {
-          callback(null, fan.speed > 0);
-        });
+          fan.speed = value ? 1 : 0;
+          that.log('HAP: set fan on to ' + value + '. fan.speed: ' + fan.speed + '. sending: ' + (command ? command.name : '?'));
+          that.lastRequest = that.lastRequest.then(() => {
+            return bond.sendCommand(that.session, command, fan);
+          }).then(() => {
+            that.log('BOND: done setting fan on to ' + value);
+            callback();
+          }).catch(error => {
+            that.log('BOND: error setting fan on to ' + value);
+            that.log(error);
+            callback();
+          });
+      })
+          .on('get', function (callback) {
+            that.log(`HAP: get fan on: ${fan.speed > 0}`);
+            callback(null, fan.speed > 0);
+      });
       accessory.getService(Service.Fan)
-        .getCharacteristic(Characteristic.RotationSpeed)
-        .setProps({
+          .getCharacteristic(Characteristic.RotationSpeed)
+          .setProps({
           minStep: 33,
           maxValue: 99
-        })
-        .on('set', function(value, callback) {
-          let commands = bond.sortedSpeedCommands(fan);
-          var command: Command = null;
+      })
+          .on('set', function (value, callback) {
+          //let commands = bond.sortedSpeedCommands(fan);
+          var command = null;
           if (value == 0) {
-            command = bond.powerOffCommand(fan);
-            (<Fan>accessory.context.device).speed = 0;
-          } else if (value == 33) {
-            command = commands[0];
-            (<Fan>accessory.context.device).speed = 1;
-          } else if (value == 66) {
-            command = commands[1];
-            (<Fan>accessory.context.device).speed = 2;
-          } else if (value == 99) {
-            command = commands[2];
-            (<Fan>accessory.context.device).speed = 3;
+              command = bond.powerOffCommand(fan);
+              accessory.context.device.speed = 0;
           }
-
-          bond.sendCommand(that.session, command, fan)
-            .then(() => {
-              callback();
-            })
-            .catch(error => {
-              that.log(error);
-              callback();
-            });
-        })
-        .on('get', function(callback) {
+          else if (value == 33) {
+              //command = commands[0];
+              command = bond.speedCommand(fan, 1);
+              accessory.context.device.speed = 1;
+          }
+          else if (value == 66) {
+              //command = commands[1];
+              command = bond.speedCommand(fan, 2);
+              accessory.context.device.speed = 2;
+          }
+          else if (value >= 99) {
+              //command = commands[2];
+              command = bond.speedCommand(fan, 3);
+              accessory.context.device.speed = 3;
+          }
+          that.log('HAP: set fan speed to ' + value + '. fan.speed: ' + fan.speed + '. sending: ' + (command ? command.name : '?'));
+          that.lastRequest = that.lastRequest.then(() => {
+            return bond.sendCommand(that.session, command, fan);
+          }).then(() => {
+            that.log('BOND: done setting fan speed to ' + value);
+            callback();
+          }).catch(error => {
+            that.log('BOND: error setting fan speed to ' + value);
+            that.log(error);
+            callback();
+          });
+      })
+          .on('get', function (callback) {
+          that.log(`HAP: get fan speed: ${fan.speed * 33}`);
           callback(null, fan.speed * 33);
-        });
+      });
     }
   }
 

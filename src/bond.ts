@@ -23,6 +23,8 @@ export interface Device {
 
 export interface Fan extends Device {
   speed: number;
+  direction: number;
+  lightState: number;
 }
 
 export class Bond {
@@ -52,27 +54,55 @@ export class Bond {
           propertyId: obj.device_property_command_id
         });
       }
-      devices.push(<Device>{
+      const device: Device = {
         id: objs[0].id,
         type: objs[0].device_type,
         room: objs[0].location_type,
         propertyId: objs[0].device_property_id,
         commands: commands,
         bondId: this.id,
-      });
+      };
+      if (device.type == "Fan") {
+        const fan = device as Fan;
+        fan.speed = 0;
+        fan.direction = 0;
+        fan.lightState = 0;
+      }
+      devices.push(device);
     }
     this.devices = devices;
   }
 
-  public powerOffCommand(device: Device): Command {
-    return device.commands
-      .filter(command => {
-        return command.name == "Power Toggle";
-      })[0];
+  public powerOffCommand(device: Fan): Command {
+    return this.speedCommand(device, 0);
   }
+  public powerOnCommand(device: Fan): Command {
+    return this.speedCommand(device, 1);
+  }
+  public speedCommand(device: Fan, speed: number): Command {
+    return this.stateCommand(device, speed, device.lightState);
+  }
+  public lightOffCommand(device: Fan): Command {
+    return this.stateCommand(device, device.speed, 0);
+  }
+  public lightOnCommand(device: Fan): Command {
+    return this.stateCommand(device, device.speed, 1);
+  }
+  public stateCommand(device: Fan, speed: number, lightState: number): Command {
+    if (speed < 0) { speed = 0; }
+    if (speed == 0) {
+      if (lightState) {
+        return this.commandForName(device, "Light Toggle");  // No fan, light on.
+      } else {
+        return this.commandForName(device, "Power Toggle");  // No fan, no light.
+      }
+    }
 
-  public powerOnCommand(device: Device): Command {
-    return this.sortedSpeedCommands(device)[0];
+    // Speeds 1-3 have the light on; speeds 4-6 are the same speeds, but with
+    // the light off.
+    if (speed > 3) { speed = 3; }
+    if (!lightState) { speed += 3; }
+    return this.commandForName(device, "Speed " + speed);
   }
 
   public commandForName(device: Device, name: string): Command {
@@ -80,16 +110,6 @@ export class Bond {
       .filter(command => {
         return command.name == name;
       }) || [null])[0];
-  }
-
-  public sortedSpeedCommands(device: Device): Command[] {
-    return device.commands
-      .filter(command => {
-        return command.name.startsWith("Speed ");
-      })
-      .sort((a, b) => {
-        return parseInt(a.name.replace(/[^\d.]/g, '')) > parseInt(b.name.replace(/[^\d.]/g, '')) ? 1 : -1;
-      });
   }
 
   public sendCommand(session: Session, command: Command, device: Device): Promise<void> {
